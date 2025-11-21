@@ -38,6 +38,17 @@ smoothing algorithms.
 - [Contributing](./CONTRIBUTING.md)
 
 ---
+## Screenshots
+### Main Panel
+<img width="335" height="452" alt="Screenshot 2025-11-21 145354" src="https://github.com/user-attachments/assets/4f024ddc-3a6e-4e72-80f8-5d538bc25901" />
+
+## Settings & Detection
+<img width="908" height="634" alt="Screenshot 2025-11-21 195903" src="https://github.com/user-attachments/assets/2f89fc64-7278-478f-8b4e-86634a710afa" />
+## Generated Markers
+<img width="1274" height="905" alt="Screenshot 2025-11-21 204152" src="https://github.com/user-attachments/assets/cc4f9c1f-a80c-4f13-a92d-b9cc2773106a" />
+
+
+
 
 **Author**: antikvn  
 **License**: MIT
