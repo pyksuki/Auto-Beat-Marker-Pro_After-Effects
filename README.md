@@ -1,28 +1,43 @@
-# Auto-Beat-Marker-Pro_After-Effects
-An enhanced ExtendScript for Adobe After Effects that automatically generates beat markers from audio using peak detection, BPM snapping, and intelligent smoothing algorithms.
+# Auto Beat Marker Pro
 
-Features
+An enhanced ExtendScript for Adobe After Effects that automatically generates 
+beat markers from audio using peak detection, BPM snapping, and intelligent 
+smoothing algorithms.
 
-Automatic Beat Detection – Detects audio peaks and converts them to composition markers
+## Quick Features
 
-BPM Snapping – Optional grid snapping with adjustable strength (Weak/Med/Strong)
+- Automatic beat detection from audio
+- BPM snapping with adjustable strength
+- Multiple sensitivity levels
+- Customizable smoothing & gap detection
+- Preset system (save/load/delete)
+- 16 marker colors
+- Dockable panel
 
-Multiple Sensitivity Levels – Low, Medium, and High sensitivity peak detection
+## Installation
 
-Smoothing Filters – Reduce noise with None, Light, Medium, or Strong smoothing kernels
+1. Download `Auto Beat Marker.jsx`
+2. Place in After Effects Scripts folder:
+   - **Windows**: `C:\Program Files\Adobe\Adobe After Effects [VERSION]\Support Files\Scripts\ScriptUI Panels`
+   - **Mac**: `/Applications/Adobe After Effects [VERSION]/Scripts/ScriptUI Panels`
+3. Restart After Effects
+4. Go to **Window > Auto Beat Marker Pro**
 
-Customizable Gap Detection – Control minimum distance between detected beats
+## Basic Usage
 
-Multiple Marker Types – Generate Strong, Weak, and Sub-Beat markers with custom labels
+1. Select an audio layer → Click "Convert Audio"
+2. Select the new amplitude layer from dropdown
+3. Adjust: Sensitivity, Smoothing, Gap
+4. Enable BPM Snap if desired
+5. Click "Generate"
 
-16 Marker Colors – Red, Yellow, Aqua, Pink, Lavender, Peach, Sea Foam, Blue, Green, Purple, Magenta, Sky, Tan, Forest, Cyan, Sand
+## Links
 
-Preset System – Save, load, and delete your favorite detection settings
+- [Full Documentation](./docs/USAGE_GUIDE.md)
+- [Troubleshooting](./docs/TROUBLESHOOTING.md)
+- [Contributing](./CONTRIBUTING.md)
 
-Auto-BPM Detection – Automatically estimate BPM from audio peaks
+---
 
-Progress Tracking – Real-time feedback during processing
-
-Dockable Panel – Works as a floating palette or dockable panel
-
-<img width="335" height="452" alt="image" src="https://github.com/user-attachments/assets/ba291a64-86ad-49d7-916f-d9594055e92c" />
+**Author**: antikvn  
+**License**: MIT
