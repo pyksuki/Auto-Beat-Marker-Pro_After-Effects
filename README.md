@@ -24,3 +24,5 @@ Auto-BPM Detection – Automatically estimate BPM from audio peaks
 Progress Tracking – Real-time feedback during processing
 
 Dockable Panel – Works as a floating palette or dockable panel
+
+<img width="335" height="452" alt="image" src="https://github.com/user-attachments/assets/ba291a64-86ad-49d7-916f-d9594055e92c" />
