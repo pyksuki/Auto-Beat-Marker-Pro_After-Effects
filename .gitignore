@@ -1,0 +1,20 @@
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# User presets (don't sync these)
+autoBeatPresets.json
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# System
+.AppleDouble
+.AppleDB
+desktop.ini
