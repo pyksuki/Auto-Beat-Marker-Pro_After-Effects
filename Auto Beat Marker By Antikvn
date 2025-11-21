@@ -1,0 +1,682 @@
+// AUTO BEAT MARKER — Enhanced Production v2.0
+// Fully backward-compatible UI (keeps labels, controls and layout identical).
+// Improvements: Robust error handling, optimized loops, improved smoothing,
+// safer file I/O for presets, clearer logging/status, protection against huge keyframe sets.
+
+(function (thisObj) {
+    // ---- Config ----
+    var SCRIPT_NAME = "AUTO BEAT MARKER PRO";
+    var MAX_KEYFRAMES = 12000; // safety limit for user confirmation
+    var PRESET_FILENAME = "autoBeatPresets.json";
+
+    // ---- Utilities: safe logging/status ----
+    function safeAlert(msg) {
+        try { alert(msg); } catch (e) {} // never blow up UI
+    }
+    function setStatus(s) {
+        try { status.text = String(s); } catch (e) {}
+    }
+    function clamp(v, min, max) { return (v < min) ? min : (v > max) ? max : v; }
+
+    // ---- Preset file helpers (safe) ----
+    function getPresetFile() {
+        try {
+            var f = new File($.fileName);
+            return new File(f.path + "/" + PRESET_FILENAME);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function loadPresets() {
+        try {
+            var pf = getPresetFile();
+            if (!pf || !pf.exists) return {};
+            if (!pf.open("r")) return {};
+            var content = pf.read();
+            pf.close();
+            if (!content) return {};
+            try { return JSON.parse(content); } catch (e) { return {}; }
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function savePresets(obj) {
+        try {
+            var pf = getPresetFile();
+            if (!pf) return false;
+            if (!pf.open("w")) return false;
+            pf.encoding = "UTF-8";
+            pf.write(JSON.stringify(obj, null, 2));
+            pf.close();
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // ---- UI (kept identical to original) ----
+    var win = (thisObj instanceof Panel) ? thisObj : new Window("palette", SCRIPT_NAME, undefined, { resizeable: true });
+    win.orientation = "column";
+    win.alignChildren = ["fill", "top"];
+    win.spacing = 4;
+    win.margins = [6, 6, 6, 6];
+
+    if (!(thisObj instanceof Panel)) win.preferredSize = [480, 520];
+
+    var header = win.add("group"); header.orientation = "column"; header.alignment = ["fill", "top"];
+    var title = header.add("statictext", undefined, SCRIPT_NAME);
+    title.graphics.font = ScriptUI.newFont("Arial", "BOLD", 12);
+    var sub = header.add("statictext", undefined, "by antikvn");
+    sub.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 9);
+
+    // Preset controls
+    var presetGroup = win.add("group"); presetGroup.orientation = "row"; presetGroup.alignChildren = ["left", "center"];
+    var presetDD = presetGroup.add("dropdownlist", undefined, []);
+    presetDD.preferredSize.width = 100;
+    var loadPresetBtn = presetGroup.add("button", undefined, "Ld"); loadPresetBtn.preferredSize.width = 30;
+    var savePresetBtn = presetGroup.add("button", undefined, "Sv"); savePresetBtn.preferredSize.width = 30;
+    var deletePresetBtn = presetGroup.add("button", undefined, "Del"); deletePresetBtn.preferredSize.width = 35;
+
+    // Audio selection
+    var audioLabel = win.add("statictext", undefined, "Audio Layer:");
+    audioLabel.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 9);
+    var audioDropdown = win.add("dropdownlist", undefined, []);
+    audioDropdown.alignment = ["fill", "top"];
+    audioDropdown.preferredSize.height = 20;
+
+    // Conversion button
+    var convertBtn = win.add("button", undefined, "Convert Audio");
+    convertBtn.alignment = ["fill", "top"]; convertBtn.preferredSize.height = 22;
+
+    // Sensitivity & Smoothing Group
+    var group1 = win.add("group"); group1.orientation = "row"; group1.alignChildren = ["fill", "center"]; group1.spacing = 2;
+    var sensGroup = group1.add("group"); sensGroup.orientation = "column"; sensGroup.spacing = 2;
+    var sensLabel = sensGroup.add("statictext", undefined, "Sens"); sensLabel.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 8);
+    var sensDD = sensGroup.add("dropdownlist", undefined, ["Low", "Med", "Hi"]); sensDD.selection = 1; sensDD.preferredSize.height = 18;
+
+    var smoothGroup = group1.add("group"); smoothGroup.orientation = "column"; smoothGroup.spacing = 2;
+    var smoothLabel = smoothGroup.add("statictext", undefined, "Smooth"); smoothLabel.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 8);
+    var smoothDD = smoothGroup.add("dropdownlist", undefined, ["None", "Lt", "Med", "Str"]); smoothDD.selection = 2; smoothDD.preferredSize.height = 18;
+
+    var gapGroup = group1.add("group"); gapGroup.orientation = "column"; gapGroup.spacing = 2;
+    var gapLabel = gapGroup.add("statictext", undefined, "Gap"); gapLabel.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 8);
+    var gapDD = gapGroup.add("dropdownlist", undefined, ["VFst", "Fst", "Norm", "Slow", "VSlo"]); gapDD.selection = 2; gapDD.preferredSize.height = 18;
+
+    // BPM snapping controls
+    var bpmGroup = win.add("panel", undefined, "BPM Snap");
+    bpmGroup.orientation = "column"; bpmGroup.alignChildren = ["fill", "top"]; bpmGroup.margins = [5, 5, 5, 5]; bpmGroup.spacing = 2;
+    var snapCheckbox = bpmGroup.add("checkbox", undefined, "Enable");
+    var autoBpmBtn = bpmGroup.add("button", undefined, "Auto-Detect"); autoBpmBtn.alignment = ["fill", "top"]; autoBpmBtn.preferredSize.height = 20;
+    var manualBpmGroup = bpmGroup.add("group"); manualBpmGroup.orientation = "row"; manualBpmGroup.spacing = 2;
+    var bpmLabel = manualBpmGroup.add("statictext", undefined, "BPM:"); bpmLabel.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 9);
+    var manualBpmInput = manualBpmGroup.add("edittext", undefined, "120"); manualBpmInput.characters = 5; manualBpmInput.preferredSize.height = 18;
+    var snapStrengthGroup = bpmGroup.add("group"); snapStrengthGroup.orientation = "row"; snapStrengthGroup.spacing = 2;
+    var strengthLabel = snapStrengthGroup.add("statictext", undefined, "Strength:"); strengthLabel.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 9);
+    var snapStrengthDD = snapStrengthGroup.add("dropdownlist", undefined, ["Weak", "Med", "Strong"]); snapStrengthDD.selection = 1; snapStrengthDD.preferredSize.height = 18;
+
+    // Marker options
+    var markerPanel = win.add("panel", undefined, "Markers");
+    markerPanel.orientation = "column"; markerPanel.alignChildren = ["left", "top"]; markerPanel.margins = [5,5,5,5]; markerPanel.spacing = 1;
+    var tierStrong = markerPanel.add("checkbox", undefined, "STRONG beats"); tierStrong.value = true;
+    var tierWeak = markerPanel.add("checkbox", undefined, "WEAK beats"); tierWeak.value = true;
+    var tierSub = markerPanel.add("checkbox", undefined, "SUB-BEATS (½, ¼)");
+
+    // Color selection
+    var colorGroup = markerPanel.add("group"); colorGroup.orientation = "row"; colorGroup.alignChildren = ["left","center"]; colorGroup.spacing = 2;
+    var colorLabel = colorGroup.add("statictext", undefined, "Color:"); colorLabel.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 9);
+    var colorDD = colorGroup.add("dropdownlist", undefined, [
+        "Red","Yellow","Aqua","Pink","Lavender","Peach","Sea Foam","Blue","Green","Purple","Magenta","Sky","Tan","Forest","Cyan","Sand"
+    ]);
+    colorDD.selection = 0; colorDD.preferredSize.height = 18;
+
+    // Progress bar
+    var progressBar = win.add("progressbar", undefined, 0, 100); progressBar.alignment = ["fill", "top"]; progressBar.preferredSize.height = 3;
+
+    // Generate + Remove buttons
+    var btnGroup = win.add("group"); btnGroup.orientation = "row"; btnGroup.alignChildren = ["fill","center"]; btnGroup.spacing = 4;
+    var generateBtn = btnGroup.add("button", undefined, "Generate"); generateBtn.preferredSize.height = 24;
+    var removeBtn = btnGroup.add("button", undefined, "Remove"); removeBtn.preferredSize.height = 24;
+
+    // Status message
+    var status = win.add("statictext", undefined, "", {multiline: true}); status.alignment = ["fill", "top"]; status.minimumSize = [100,12];
+    status.graphics.font = ScriptUI.newFont("Arial", "REGULAR", 8);
+
+    // ---- Internal state ----
+    var comp = null;
+    var lastUpdateTime = 0;
+    function uiUpdateGuard(force) {
+        var now = new Date().getTime();
+        if (force || (now - lastUpdateTime) > 300) {
+            try { win.update(); } catch (e) {}
+            lastUpdateTime = now;
+        }
+    }
+
+    function showProgress(perc, msg, skipImmediateUpdate) {
+        try {
+            progressBar.value = clamp(parseInt(perc,10) || 0, 0, 100);
+            setStatus(msg || "");
+            if (!skipImmediateUpdate) uiUpdateGuard(true);
+            else uiUpdateGuard(false);
+        } catch (e) {}
+    }
+
+    // ---- Audio layer discovery ----
+    function refreshAudioLayers() {
+        try {
+            audioDropdown.removeAll();
+        } catch (e) { /* ignore */ }
+
+        var items = [];
+        try {
+            if (app.project && app.project.activeItem && (app.project.activeItem instanceof CompItem)) {
+                comp = app.project.activeItem;
+                for (var i = 1; i <= comp.numLayers; i++) {
+                    try {
+                        var layer = comp.layer(i);
+                        var hasAmp = false;
+                        if (layer.name.indexOf("Audio Amplitude") !== -1) hasAmp = true;
+                        else {
+                            var effects = layer.property("ADBE Effect Parade");
+                            if (effects) {
+                                if (layer.effect("Both Channels") || layer.effect("Left Channel") || layer.effect("Right Channel")) {
+                                    hasAmp = true;
+                                }
+                            }
+                        }
+                        if (hasAmp) items.push(layer.name);
+                    } catch (e) { /* ignore layer errors */ }
+                }
+            }
+        } catch (e) { /* ignore project errors */ }
+
+        if (items.length === 0) {
+            audioDropdown.add("item", "No audio amplitude layers found");
+            audioDropdown.selection = 0;
+        } else {
+            for (var j=0;j<items.length;j++) audioDropdown.add("item", items[j]);
+            audioDropdown.selection = 0;
+        }
+    }
+
+    function getAmplitudeSlider(layer) {
+        try {
+            if (!layer) return null;
+            if (layer.effect("Both Channels")) return layer.effect("Both Channels")("Slider");
+            if (layer.effect("Left Channel")) return layer.effect("Left Channel")("Slider");
+            if (layer.effect("Right Channel")) return layer.effect("Right Channel")("Slider");
+        } catch (e) { }
+        return null;
+    }
+
+    // ---- Signal processing helpers ----
+    function buildKernel(index) {
+        // kernels identical to previous behavior
+        var kernels = [
+            [1],
+            [0.25, 0.5, 0.25],
+            [0.1, 0.2, 0.4, 0.2, 0.1],
+            [0.05,0.1,0.15,0.2,0.2,0.15,0.1,0.05]
+        ];
+        return kernels[ clamp(index|0, 0, kernels.length-1 ) ];
+    }
+
+    function applySmoothing(values, kernel) {
+        // optimized convolution with bounds checks
+        var n = values.length;
+        if (n === 0) return [];
+        var klen = kernel.length;
+        var half = Math.floor(klen/2);
+        var out = new Array(n);
+        var halfway = Math.floor(n/2);
+
+        // Pre-normalize kernel to ensure sum == 1 (guard against floating imprecision)
+        var ksum = 0; for (var ka=0; ka<klen; ka++) ksum += kernel[ka];
+        if (ksum === 0) ksum = 1;
+        var knorm = new Array(klen);
+        for (var kb=0; kb<klen; kb++) knorm[kb] = kernel[kb] / ksum;
+
+        for (var i=0; i<n; i++) {
+            if (i === halfway) showProgress(12, "Smoothing...", true);
+            var s = 0, w = 0;
+            var start = Math.max(0, i - half);
+            var end = Math.min(n-1, i + (klen-half-1));
+            for (var j=start; j<=end; j++) {
+                var kidx = j - i + half;
+                var kk = knorm[kidx] || 0;
+                s += values[j] * kk;
+                w += kk;
+            }
+            out[i] = (w > 0) ? (s / w) : values[i];
+        }
+        return out;
+    }
+
+    function detectPeaks(times, values, threshold, minTimeDist, sensitivity) {
+        var peaks = [];
+        if (!times || !values || times.length !== values.length) return peaks;
+        var n = values.length;
+        if (n < 3) return peaks;
+        var lastTime = -1e9;
+        var halfway = Math.floor(n/2);
+        // sensitivity mapping: 0->High threshold multiplier, 2->Low
+        var strengthThreshold = (sensitivity === 2) ? 1.0 : (sensitivity === 1) ? 1.1 : 1.2;
+
+        // We start from 2..n-3 to reuse neighbors check like original
+        for (var i = 2; i < n - 2; i++) {
+            if (i === halfway) showProgress(30, "Finding peaks...", true);
+            var v = values[i];
+            if (!(v > threshold)) continue;
+            // local max check
+            if (!(v > values[i-1] && v >= values[i+1])) continue;
+            var t = times[i];
+            if ((t - lastTime) < minTimeDist) continue;
+            var strength = v / threshold;
+            if (strength >= strengthThreshold) {
+                peaks.push({ time: t, strength: strength });
+                lastTime = t;
+            }
+        }
+        return peaks;
+    }
+
+    function estimateBPM(times) {
+        if (!times || times.length < 2) return null;
+        // compute diffs but guard against huge arrays by sampling if needed
+        var n = times.length;
+        var maxSamples = 1000;
+        var idxStep = (n > maxSamples) ? Math.ceil(n / maxSamples) : 1;
+        var prev = null;
+        var diffs = [];
+        for (var i = 0; i < n; i += idxStep) {
+            var t = times[i];
+            if (prev !== null) diffs.push(t - prev);
+            prev = t;
+        }
+        if (diffs.length === 0) return null;
+        var sum = 0;
+        for (var j=0;j<diffs.length;j++) sum += diffs[j];
+        var avg = sum / diffs.length;
+        if (avg <= 0) return null;
+        var bpm = 60.0 / avg;
+        // clamp to a reasonable BPM range
+        return clamp(bpm, 20, 400);
+    }
+
+    function snapToGrid(time, bpm, strengthIndex) {
+        if (!bpm || bpm <= 0) return time;
+        var beatDuration = 60.0 / bpm;
+        var grid = time / beatDuration;
+        var snapped = Math.round(grid);
+        var str = strengthIndex|0;
+        if (str <= 0) { // weak
+            return time + (snapped - grid) * beatDuration * 0.5;
+        } else if (str === 1) { // medium
+            return time + (snapped - grid) * beatDuration * 0.8;
+        } else { // strong
+            return snapped * beatDuration;
+        }
+    }
+
+    // ---- Marker creation/removal ----
+    function createMarkers(peaks, bpm, doSnap) {
+        if (!comp || !(comp instanceof CompItem)) {
+            safeAlert("No active composition to add markers.");
+            return;
+        }
+        if (!peaks || peaks.length === 0) {
+            safeAlert("No peaks to create markers.");
+            return;
+        }
+
+        try {
+            app.beginUndoGroup("Auto Beat Marker Pro");
+
+            var markerProp = comp.markerProperty;
+            if (!markerProp) {
+                safeAlert("Composition markers unsupported.");
+                return;
+            }
+
+            var colorIndex = (colorDD.selection) ? colorDD.selection.index : 0;
+            var snapStrength = (snapStrengthDD.selection) ? snapStrengthDD.selection.index : 1;
+            var useStrong = !!tierStrong.value;
+            var useWeak = !!tierWeak.value;
+            var useSub = !!tierSub.value;
+
+            var total = peaks.length;
+            var halfway = Math.floor(total/2);
+
+            // create keys in single pass
+            for (var i=0;i<total;i++) {
+                if (i === halfway) showProgress(70, "Creating markers...", true);
+                var p = peaks[i];
+                var t = p.time;
+                if (doSnap && bpm) {
+                    t = snapToGrid(t, bpm, snapStrength);
+                }
+                var label = "Beat";
+                var pStrength = (typeof p.strength === "number") ? p.strength : 1.0;
+                if (useStrong && pStrength >= 1.5) label = "Strong Beat";
+                else if (useWeak && pStrength >= 1.2) label = "Weak Beat";
+                else if (useSub) label = "Sub-Beat";
+
+                var m = new MarkerValue(label);
+                m.comment = "Strength: " + Number(pStrength).toFixed(2) + " (auto)";
+                m.label = colorIndex;
+                try {
+                    markerProp.setValueAtTime(t, m);
+                } catch (e) {
+                    // If marker fails at a particular time, skip that time but continue
+                }
+            }
+        } catch (e) {
+            // try to gracefully end undo group
+        } finally {
+            try { app.endUndoGroup(); } catch (e) {}
+        }
+    }
+
+    function removeAutoMarkers() {
+        if (!comp || !(comp instanceof CompItem)) {
+            safeAlert("No active composition.");
+            return;
+        }
+        try {
+            app.beginUndoGroup("Remove Auto Beat Markers");
+            var mp = comp.markerProperty;
+            if (!mp) {
+                safeAlert("No composition marker property found.");
+                return;
+            }
+            // collect indices to remove (iterate backwards for safe removal)
+            var toRemove = [];
+            var n = mp.numKeys || 0;
+            for (var i = 1; i <= n; i++) {
+                try {
+                    var mv = mp.keyValue(i);
+                    if (mv && mv.comment && (mv.comment.indexOf("Strength:") !== -1 || mv.comment.indexOf("(auto)") !== -1)) {
+                        toRemove.push(i);
+                    }
+                } catch (e) { /* ignore */ }
+            }
+            for (var j = toRemove.length - 1; j >= 0; j--) {
+                try { mp.removeKey(toRemove[j]); } catch (e) {}
+            }
+            setStatus("Removed " + toRemove.length + " auto-generated markers.");
+        } catch (e) {
+            safeAlert("Failed to remove markers: " + e.toString());
+        } finally {
+            try { app.endUndoGroup(); } catch (e) {}
+        }
+    }
+
+    // ---- Main generator ----
+    function generateBeatMarkers() {
+        refreshAudioLayers(); // ensure comp and audio list are up-to-date
+        if (!comp || !(comp instanceof CompItem)) {
+            safeAlert("No active composition!");
+            return;
+        }
+        if (!audioDropdown.selection || !audioDropdown.selection.text) {
+            safeAlert("Select an audio amplitude layer first.");
+            return;
+        }
+
+        var selectedLayerName = audioDropdown.selection.text;
+        var layer = null;
+        try {
+            // try to fetch by name - robust to duplicate names (takes first match)
+            for (var i = 1; i <= comp.numLayers; i++) {
+                try {
+                    var l = comp.layer(i);
+                    if (l && l.name === selectedLayerName) { layer = l; break; }
+                } catch (e) {}
+            }
+            if (!layer) {
+                // fallback: try direct layer lookup (if name unique)
+                try { layer = comp.layer(selectedLayerName); } catch (e) { layer = null; }
+            }
+        } catch (e) { layer = null; }
+
+        if (!layer) {
+            safeAlert("Selected audio layer not found in current comp.");
+            return;
+        }
+
+        var slider = getAmplitudeSlider(layer);
+        if (!slider || slider.numKeys < 2) {
+            safeAlert("Audio amplitude keyframes missing. Use 'Convert Audio to Keyframes'.");
+            return;
+        }
+
+        var numKeys = slider.numKeys;
+        if (numKeys <= 0) {
+            safeAlert("No keyframes on the amplitude slider.");
+            return;
+        }
+        if (numKeys > MAX_KEYFRAMES) {
+            var cont = confirm("Warning: " + numKeys + " keyframes detected. This can be slow. Continue?");
+            if (!cont) return;
+        }
+
+        showProgress(1, "Reading keyframes...");
+        // fast bulk read into arrays
+        var times = new Array(numKeys);
+        var values = new Array(numKeys);
+        try {
+            for (var k = 0; k < numKeys; k++) {
+                times[k] = slider.keyTime(k+1);
+                // protect against getter errors
+                try { values[k] = parseFloat(slider.keyValue(k+1)); } catch (e) { values[k] = 0; }
+            }
+        } catch (e) {
+            safeAlert("Failed reading keyframes: " + e.toString());
+            showProgress(0, "");
+            return;
+        }
+        showProgress(5, "Processing...");
+
+        // smoothing
+        var kernel = buildKernel(smoothDD.selection ? smoothDD.selection.index : 2);
+        var smoothed = applySmoothing(values, kernel);
+
+        showProgress(20, "Calculating threshold...");
+        // threshold: based on sorted values (sample if very large)
+        var sortedValues = smoothed.slice(0); // copy
+        var sampleLimit = 8000;
+        if (sortedValues.length > sampleLimit) {
+            // simple sampling to avoid massive sort cost
+            var sample = [];
+            var step = Math.max(1, Math.floor(sortedValues.length / sampleLimit));
+            for (var s = 0; s < sortedValues.length; s += step) sample.push(sortedValues[s]);
+            sample.sort(function(a,b){return a-b;});
+            sortedValues = sample;
+        } else {
+            sortedValues.sort(function(a,b){return a-b;});
+        }
+
+        var sensIndex = sensDD.selection ? sensDD.selection.index : 1;
+        var threshIdx = Math.floor(sortedValues.length * (sensIndex === 0 ? 0.60 : sensIndex === 1 ? 0.75 : 0.90));
+        threshIdx = clamp(threshIdx, 0, sortedValues.length-1);
+        var threshold = (sortedValues.length > 0) ? sortedValues[threshIdx] : 0;
+        // avoid zero threshold
+        if (!threshold || threshold <= 0) threshold = 1e-6;
+
+        // Minimum gap in frames -> seconds
+        var minGaps = [2, 4, 6, 8, 12];
+        var minFrames = minGaps[ clamp(gapDD.selection ? gapDD.selection.index : 2, 0, minGaps.length-1) ];
+        var minTime = minFrames * comp.frameDuration;
+
+        var peaks = detectPeaks(times, smoothed, threshold, minTime, sensIndex);
+
+        if (!peaks || peaks.length === 0) {
+            safeAlert("No peaks found – try reducing smoothing or increasing sensitivity.");
+            showProgress(0, "");
+            return;
+        }
+
+        showProgress(50, "Estimating BPM...");
+        var bpm = null;
+        var doSnap = !!snapCheckbox.value;
+        var manualBpm = parseFloat(manualBpmInput.text);
+        if (doSnap && manualBpm > 0 && isFinite(manualBpm)) {
+            bpm = clamp(manualBpm, 20, 400);
+        } else {
+            var peakTimes = [];
+            for (var pi=0; pi<peaks.length; pi++) peakTimes.push(peaks[pi].time);
+            bpm = estimateBPM(peakTimes);
+        }
+
+        showProgress(60, "Creating markers...");
+        createMarkers(peaks, bpm, doSnap);
+
+        showProgress(100, "Done: " + peaks.length + " markers. BPM = " + (bpm ? bpm.toFixed(2) : "N/A"));
+        try { safeAlert("✅ Created " + peaks.length + " beat markers.\nEstimated BPM: " + (bpm ? bpm.toFixed(2) : "N/A")); } catch (e) {}
+        showProgress(0, "");
+    }
+
+    // ---- Convert audio convenience ----
+    function convertAudioToKeyframes() {
+        if (!comp || !(comp instanceof CompItem)) {
+            safeAlert("No active composition!");
+            return;
+        }
+        var layer = null;
+        try { layer = comp.selectedLayers[0]; } catch (e) { layer = null; }
+        if (!layer || !(layer instanceof AVLayer) || !layer.source || (layer.source.mainSource instanceof FileSource) === false) {
+            safeAlert("Select a valid audio layer in the comp.");
+            return;
+        }
+        try {
+            app.beginUndoGroup("Convert Audio to Keyframes");
+            layer.selected = true;
+            app.executeCommand(app.findMenuCommandId("Convert Audio to Keyframes"));
+            app.endUndoGroup();
+        } catch (e) {
+            try { app.endUndoGroup(); } catch (ee) {}
+            safeAlert("Failed to convert audio to keyframes: " + e.toString());
+            return;
+        }
+        refreshAudioLayers();
+        safeAlert("Audio converted – select the new amplitude layer in the dropdown.");
+    }
+
+    // ---- Preset UI wiring ----
+    var presets = loadPresets();
+    function refreshPresetList() {
+        try {
+            presetDD.removeAll();
+            presetDD.add("item", "-- Select Preset --");
+            for (var n in presets) {
+                if (presets.hasOwnProperty(n)) presetDD.add("item", n);
+            }
+            presetDD.selection = 0;
+        } catch (e) {}
+    }
+    refreshPresetList();
+
+    loadPresetBtn.onClick = function () {
+        try {
+            if (presetDD.selection && (presetDD.selection.text in presets)) {
+                var obj = presets[presetDD.selection.text];
+                if (!obj) return;
+                // safe apply with bounds checking
+                try { sensDD.selection = sensDD.items[ clamp(obj.sens|0, 0, sensDD.items.length-1) ]; } catch (e) {}
+                try { smoothDD.selection = smoothDD.items[ clamp(obj.smooth|0, 0, smoothDD.items.length-1) ]; } catch (e) {}
+                try { gapDD.selection = gapDD.items[ clamp(obj.gap|0, 0, gapDD.items.length-1) ]; } catch (e) {}
+                snapCheckbox.value = !!obj.snap;
+                manualBpmInput.text = (obj.manualBpm !== undefined) ? String(obj.manualBpm) : manualBpmInput.text;
+                try { snapStrengthDD.selection = snapStrengthDD.items[ clamp(obj.strength|0, 0, snapStrengthDD.items.length-1) ]; } catch (e) {}
+                tierStrong.value = !!obj.strong; tierWeak.value = !!obj.weak; tierSub.value = !!obj.sub;
+                try { colorDD.selection = colorDD.items[ clamp(obj.color|0, 0, colorDD.items.length-1) ]; } catch (e) {}
+                setStatus("Preset '" + presetDD.selection.text + "' loaded.");
+            }
+        } catch (e) { setStatus("Failed to load preset."); }
+    };
+
+    savePresetBtn.onClick = function () {
+        try {
+            var name = prompt("Preset name:", "Default");
+            if (!name) return;
+            presets[name] = {
+                sens: sensDD.selection ? sensDD.selection.index : 1,
+                smooth: smoothDD.selection ? smoothDD.selection.index : 2,
+                gap: gapDD.selection ? gapDD.selection.index : 2,
+                snap: !!snapCheckbox.value,
+                manualBpm: manualBpmInput.text,
+                strength: snapStrengthDD.selection ? snapStrengthDD.selection.index : 1,
+                strong: !!tierStrong.value,
+                weak: !!tierWeak.value,
+                sub: !!tierSub.value,
+                color: colorDD.selection ? colorDD.selection.index : 0
+            };
+            if (savePresets(presets)) {
+                refreshPresetList();
+                setStatus("Saved preset '" + name + "'.");
+            } else {
+                setStatus("Preset saved to memory but failed to write file.");
+            }
+        } catch (e) { setStatus("Failed to save preset."); }
+    };
+
+    deletePresetBtn.onClick = function () {
+        try {
+            if (presetDD.selection && (presetDD.selection.text in presets)) {
+                if (confirm("Delete preset '" + presetDD.selection.text + "'?")) {
+                    delete presets[presetDD.selection.text];
+                    if (savePresets(presets)) {
+                        refreshPresetList();
+                        setStatus("Deleted preset.");
+                    } else {
+                        setStatus("Deleted from memory but failed to save presets file.");
+                    }
+                }
+            }
+        } catch (e) { setStatus("Failed to delete preset."); }
+    };
+
+    // ---- Auto BPM detect button ----
+    autoBpmBtn.onClick = function () {
+        refreshAudioLayers();
+        if (!audioDropdown.selection || !audioDropdown.selection.text) {
+            safeAlert("Select audio layer first.");
+            return;
+        }
+        var selName = audioDropdown.selection.text;
+        var layer = null;
+        for (var i=1;i<=comp.numLayers;i++) {
+            try { if (comp.layer(i).name === selName) { layer = comp.layer(i); break; } } catch (e) {}
+        }
+        if (!layer) { safeAlert("Layer not found."); return; }
+        var slider = getAmplitudeSlider(layer);
+        if (!slider || slider.numKeys < 2) { safeAlert("Amplitude keyframes missing."); return; }
+        var times = [], vals = [];
+        for (var k=1; k<=slider.numKeys; k++) {
+            times.push(slider.keyTime(k));
+            try { vals.push(parseFloat(slider.keyValue(k))); } catch (e) { vals.push(0); }
+        }
+        var bpm = estimateBPM(times);
+        if (bpm) {
+            manualBpmInput.text = bpm.toFixed(2);
+            setStatus("Estimated BPM: " + bpm.toFixed(2));
+        } else {
+            safeAlert("Could not estimate BPM.");
+        }
+    };
+
+    // ---- Button wiring ----
+    convertBtn.onClick = convertAudioToKeyframes;
+    generateBtn.onClick = generateBeatMarkers;
+    removeBtn.onClick = removeAutoMarkers;
+
+    // ---- Show/refresh ----
+    win.onShow = function () { refreshAudioLayers(); };
+    win.onResizing = win.onResize = function () { this.layout.resize(); };
+
+    if (win instanceof Window) { win.center(); win.show(); }
+    else { win.layout.layout(true); }
+
+})(this);
