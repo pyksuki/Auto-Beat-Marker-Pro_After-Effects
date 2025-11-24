@@ -1,7 +1,15 @@
-// AUTO BEAT MARKER — Enhanced Production v2.0
+// AUTO BEAT MARKER — Enhanced Production v2.0 (Brazilian Phonk-aware)
 // Fully backward-compatible UI (keeps labels, controls and layout identical).
 // Improvements: Robust error handling, optimized loops, improved smoothing,
 // safer file I/O for presets, clearer logging/status, protection against huge keyframe sets.
+// --- Added: Brazilian Phonk-specific multi-band detection heuristics, adaptive thresholds,
+// high/low-band peak detectors, tempo bias toward 120-160 BPM and half-time handling.
+
+/* NOTE:
+   - All original function names, variables and UI elements are preserved.
+   - Additional detection logic is implemented with minimal invasive changes and
+     conditional fallbacks so the script continues to work for other genres.
+*/
 
 (function (thisObj) {
     // ---- Config ----
@@ -302,7 +310,27 @@
         if (avg <= 0) return null;
         var bpm = 60.0 / avg;
         // clamp to a reasonable BPM range
-        return clamp(bpm, 20, 400);
+        var bpmClamped = clamp(bpm, 20, 400);
+
+        // --- Brazilian Phonk prioritization ---
+        // Phonk often sits 120-160 BPM (sometimes half-time feel). If the detected BPM falls
+        // outside that range, check double/half interpretations and pick the one closer to 120-160.
+        try {
+            var lowTarget = 120, highTarget = 160;
+            if (bpmClamped < lowTarget || bpmClamped > highTarget) {
+                var candidates = [bpmClamped, bpmClamped*2, bpmClamped/2];
+                var best = candidates[0];
+                var bestDist = Math.min(Math.abs(candidates[0]-((lowTarget+highTarget)/2)), Math.abs(candidates[0]-((lowTarget+highTarget)/2)));
+                for (var ci=1; ci<candidates.length; ci++) {
+                    var c = clamp(candidates[ci], 20, 400);
+                    var dist = Math.abs(c - ((lowTarget+highTarget)/2));
+                    if (dist < bestDist) { bestDist = dist; best = c; }
+                }
+                bpmClamped = best;
+            }
+        } catch (e) { /* ignore prioritization failures */ }
+
+        return bpmClamped;
     }
 
     function snapToGrid(time, bpm, strengthIndex) {
@@ -510,10 +538,211 @@
         var minFrames = minGaps[ clamp(gapDD.selection ? gapDD.selection.index : 2, 0, minGaps.length-1) ];
         var minTime = minFrames * comp.frameDuration;
 
-        var peaks = detectPeaks(times, smoothed, threshold, minTime, sensIndex);
+        // ------------------------------------------------------------
+        // Brazilian Phonk-specific detection enhancements:
+        // 1) Try to detect explicit low/high sliders on the layer (users sometimes provide these).
+        // 2) If explicit bands are not available, synthesize low/high proxies from the single amplitude
+        //    by using multi-window smoothing and transient extraction:
+        //    - lowBand: heavy smoothing (captures 808 sub-bass energy; longer envelope)
+        //    - highBand: residual between raw and long-window smoothing (captures sharp transients, hi-hats)
+        // 3) Use separate thresholds and minTime distances for low (kicks) and high (hi-hats).
+        // 4) Merge peak lists with duplicate suppression and weight strengths so strong 808s dominate.
+        // ------------------------------------------------------------
+
+        // Helper to check for explicit frequency-band sliders (common in custom rigs)
+        function findBandSlider(layerObj, names) {
+            try {
+                var effects = layerObj.property("ADBE Effect Parade");
+                if (!effects) return null;
+                for (var ni=0; ni<names.length; ni++) {
+                    var nm = names[ni];
+                    try {
+                        if (layerObj.effect(nm) && layerObj.effect(nm)("Slider")) return layerObj.effect(nm)("Slider");
+                    } catch (e) {}
+                }
+            } catch (e) {}
+            return null;
+        }
+
+        // If user has added band-specific amplitude layers (e.g., Bass, Low, High, Hats), prefer them
+        var explicitLowSlider = findBandSlider(layer, ["Bass", "LowFreq", "Low", "Sub", "Kick"]);
+        var explicitHighSlider = findBandSlider(layer, ["Highs", "Hi", "Hats", "Cymbals", "Top"]);
+
+        var lowValues = null;
+        var highValues = null;
+
+        if (explicitLowSlider && explicitHighSlider) {
+            // Read explicit band keyframes (fast read)
+            try {
+                var lowKeys = explicitLowSlider.numKeys;
+                var highKeys = explicitHighSlider.numKeys;
+                // If counts match main slider, sample them; otherwise resample to times[] by interpolation fallback
+                if (lowKeys === numKeys && highKeys === numKeys) {
+                    lowValues = new Array(numKeys);
+                    highValues = new Array(numKeys);
+                    for (var ii = 0; ii < numKeys; ii++) {
+                        try { lowValues[ii] = parseFloat(explicitLowSlider.keyValue(ii+1)); } catch (e) { lowValues[ii] = 0; }
+                        try { highValues[ii] = parseFloat(explicitHighSlider.keyValue(ii+1)); } catch (e) { highValues[ii] = 0; }
+                    }
+                } else {
+                    // fallback: use nearest-in-time sampling for each main time entry
+                    lowValues = new Array(numKeys);
+                    highValues = new Array(numKeys);
+                    for (var ti=0; ti<times.length; ti++) {
+                        var t = times[ti];
+                        try { lowValues[ti] = explicitLowSlider.valueAtTime(t, false); } catch (e) { lowValues[ti] = 0; }
+                        try { highValues[ti] = explicitHighSlider.valueAtTime(t, false); } catch (e) { highValues[ti] = 0; }
+                    }
+                }
+            } catch (e) {
+                lowValues = null; highValues = null;
+            }
+        }
+
+        // If not present, synthesize proxies
+        if (!lowValues || !highValues) {
+            // Make a long-window smoothing to capture low/sub energy
+            // Use a larger kernel for low smoothing than UI-specified smoothing to bias toward sub-bass energy.
+            var longKernel = [0.01,0.02,0.05,0.1,0.64,0.1,0.05,0.02,0.01]; // large smoothing kernel (approx low-pass)
+            var longSmoothed = applySmoothing(values, longKernel);
+
+            // lowValues approximates sustained low-end energy (808s), good for kick detection
+            lowValues = longSmoothed;
+
+            // highValues approximates sharp transients: subtract long envelope from raw to produce high-pass-like residual
+            highValues = new Array(values.length);
+            for (var hi=0; hi<values.length; hi++) {
+                highValues[hi] = values[hi] - longSmoothed[hi];
+                // rectify to positive domain (we're interested in transient magnitudes)
+                if (highValues[hi] < 0) highValues[hi] = 0;
+            }
+
+            // Also apply a light smoothing to the high residual to reduce single-sample noise
+            var smallKernel = [0.25,0.5,0.25];
+            highValues = applySmoothing(highValues, smallKernel);
+
+            // Additional phonk-specific tweak:
+            // Hi-hats often occur in double/triple subdivisions; allow detection sensitivity to be higher for highValues.
+            // Low (808) hits can be smeared; using longSmoothed helps capture the slow envelope.
+        }
+
+        // Adaptive thresholds for each band: using local percentile rather than single global value can better adapt
+        function computeAdaptiveThreshold(arr, sensitivity, baseFactor) {
+            // baseFactor multiplies percentile to get threshold (tweak for hi/low)
+            try {
+                var copy = arr.slice(0);
+                if (copy.length > 2000) {
+                    // coarse sample for performance
+                    var samp = [];
+                    var st = Math.floor(copy.length / 2000);
+                    for (var s=0;s<copy.length;s+=st) samp.push(copy[s]);
+                    copy = samp;
+                }
+                copy.sort(function(a,b){return a-b;});
+                var p = Math.floor(copy.length * (sensitivity === 0 ? 0.60 : sensitivity === 1 ? 0.75 : 0.90));
+                p = clamp(p, 0, copy.length-1);
+                var val = copy[p] || 0;
+                // ensure not zero
+                if (!val || val <= 0) val = 1e-6;
+                return val * baseFactor;
+            } catch (e) {
+                return 1e-6;
+            }
+        }
+
+        // Determine thresholds:
+        // - lowThreshold favors slightly higher baseline (808 often very strong)
+        // - highThreshold uses a lower baseFactor because hi-hat transients are shorter but can be lower amplitude after residual extraction
+        var lowBaseFactor = (sensIndex === 2) ? 0.9 : (sensIndex === 1) ? 1.1 : 1.3;
+        var highBaseFactor = (sensIndex === 2) ? 0.6 : (sensIndex === 1) ? 0.8 : 1.0;
+
+        var lowThreshold = computeAdaptiveThreshold(lowValues, sensIndex, lowBaseFactor);
+        var highThreshold = computeAdaptiveThreshold(highValues, sensIndex, highBaseFactor);
+
+        // Min time distances: keep standard minTime for low (kicks), but allow much smaller minTime for high (hats)
+        var minTimeLow = Math.max(minTime, 0.03); // ensure at least ~30ms between low peaks (guards against spurious double hits)
+        var minTimeHigh = Math.max(comp.frameDuration * 1, 0.01); // allow very short spacing (10ms) to catch fast hi-hats
+
+        // Run detection separately
+        showProgress(35, "Detecting low-band peaks (kicks)...");
+        var lowPeaks = detectPeaks(times, lowValues, lowThreshold, minTimeLow, sensIndex);
+
+        showProgress(45, "Detecting high-band peaks (hats/transients)...");
+        var highPeaks = detectPeaks(times, highValues, highThreshold, minTimeHigh, sensIndex);
+
+        // Now combine peaks, preferring lowPeaks when they coincide (808 hits are primary).
+        // Merge strategy:
+        // - create union of times; if a high peak falls within small window of a low peak, boost strength of low peak instead of duplicating.
+        var merged = [];
+        var li = 0, hi = 0;
+        // Convert to iterables sorted by time (they already are)
+        // First, add all low peaks
+        for (var lp=0; lp<lowPeaks.length; lp++) {
+            merged.push({ time: lowPeaks[lp].time, strength: (lowPeaks[lp].strength || 1.0) * 1.2, source: "low" });
+        }
+        // Then add high peaks if they are not too close to a low peak (or treat them as separate sub-beats)
+        var proximity = Math.max(minTime, 0.04); // 40ms proximity: if hi is within this of a low, consider it the same event
+        for (var hp=0; hp<highPeaks.length; hp++) {
+            var htime = highPeaks[hp].time;
+            var tooClose = false;
+            for (var m=0; m<merged.length; m++) {
+                if (Math.abs(merged[m].time - htime) <= proximity) {
+                    // enhance existing merged entry's strength slightly to reflect hi-hat presence on the same beat
+                    merged[m].strength = merged[m].strength + (highPeaks[hp].strength || 0.8) * 0.25;
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (!tooClose) {
+                // hi-hat isolated: keep but mark as lighter (sub-beat)
+                merged.push({ time: htime, strength: (highPeaks[hp].strength || 0.8) * 0.9, source: "high" });
+            }
+        }
+
+        // Sort merged by time
+        merged.sort(function(a,b){ return a.time - b.time; });
+
+        // Remove duplicates within a minimal merge window (minTime/2)
+        var finalPeaks = [];
+        var lastT = -1e9;
+        var mergeWindow = Math.max(minTime * 0.5, comp.frameDuration * 0.5, 0.01);
+        for (var mm=0; mm<merged.length; mm++) {
+            var e = merged[mm];
+            if ((e.time - lastT) < mergeWindow) {
+                // Merge: keep the stronger entry
+                if (finalPeaks.length > 0) {
+                    var prev = finalPeaks[finalPeaks.length-1];
+                    if (e.strength > prev.strength) {
+                        finalPeaks[finalPeaks.length-1] = { time: e.time, strength: e.strength, source: e.source };
+                        lastT = e.time;
+                    } else {
+                        // keep prev, ignore e
+                    }
+                } else {
+                    finalPeaks.push({ time: e.time, strength: e.strength, source: e.source });
+                    lastT = e.time;
+                }
+            } else {
+                finalPeaks.push({ time: e.time, strength: e.strength, source: e.source });
+                lastT = e.time;
+            }
+        }
+
+        // Final strength normalization: ensure numeric strength exists
+        for (var zp=0; zp<finalPeaks.length; zp++) {
+            if (!finalPeaks[zp].strength || !isFinite(finalPeaks[zp].strength)) finalPeaks[zp].strength = 1.0;
+        }
+
+        var peaks = finalPeaks;
+
+        // If detection returned nothing, fall back to original single-band detection behavior (backward compatibility)
+        if ((!peaks || peaks.length === 0) && smoothed && smoothed.length > 0) {
+            // original behavior fallback
+            peaks = detectPeaks(times, smoothed, threshold, minTime, sensIndex);
+        }
 
         if (!peaks || peaks.length === 0) {
-            safeAlert("No peaks found – try reducing smoothing or increasing sensitivity.");
+            safeAlert("No peaks found – try reducing smoothing or increasing sensitivity (or convert audio to frequency bands for best results).");
             showProgress(0, "");
             return;
         }
